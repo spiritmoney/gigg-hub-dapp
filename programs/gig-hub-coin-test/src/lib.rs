@@ -5,6 +5,8 @@ use anchor_spl::{
     token::{Mint, Token, TokenAccount},
 };
 use solana_program::account_info::AccountInfo;
+use std::fmt;
+use borsh::{BorshSerialize, BorshDeserialize};
 
 
 declare_id!("GH1vm3L2rob7GzLLQCi5t9shgJDXSWCTA8zgJjhGNKXx");
@@ -21,43 +23,49 @@ pub mod gig_hub_coin_test {
     }
 
     pub fn initializestatepda(
-        ctx: Context<Initialisedstatepda>,
-        _bump: u8,
-        price: u64,
-        assign_to: Pubkey,
-        fee_payer_freelancer: bool,
+        ctx: Context<Initialisedstatepda>,  // Context containing account information
+        _bump: u8, // Bump seed for PDA generation
+        price: u64, // Price to be set for the state
+        assign_to: Pubkey, // Public key of the wallet to which the state is assigned
+        fee_payer_freelancer: bool, // Boolean to determine who pays the fee (freelancer or employer)
     ) -> Result<()> {
-        msg!("state got Initialised");
+        msg!("state got Initialised"); // Log message indicating the start of the function
 
+         // Validate the price to ensure it's greater than 0
         if price <= 0 {
             return Err(MyError::InvalidPrice.into());
         }
 
+        // This check is redundant since `price` is of type u64 and cannot exceed u64::MAX
         if price > u64::MAX {
             return Err(MyError::InvalidPrice.into());
         }
 
+         // Ensure the owner's public key is not the default public key
         if ctx.accounts.owner.key() == Pubkey::default() {
             return Err(MyError::InvalidOwner.into());
         }
 
+         // Check that the state is not assigned to the owner themselves
         if assign_to == ctx.accounts.owner.key() {
             return Err(MyError::InvalidAssignment.into());
         }
 
+         // Validate the bump seed to ensure it does not exceed 10
         if _bump > 10 {
             return Err(MyError::InvalidBump.into());
         }
 
-        let state_pda = &mut ctx.accounts.statepda;
+        let state_pda = &mut ctx.accounts.statepda; // Mutable reference to the state PDA account
 
+        // Set the state PDA's properties
         state_pda.amount = price;
         state_pda.owner = ctx.accounts.owner.key();
         state_pda.assign_wallet = assign_to;
-        ctx.accounts.counter_pda.count += 1;
-        state_pda.assigned_counter = ctx.accounts.counter_pda.count;
-        state_pda.status = "Waiting".to_string();
-        state_pda.fee_payer_freelancer = fee_payer_freelancer;
+        ctx.accounts.counter_pda.count += 1; // Increment the counter PDA's count
+        state_pda.assigned_counter = ctx.accounts.counter_pda.count; // Assign the incremented count to the state PDA
+        state_pda.status = "Waiting".to_string(); // Set the initial status of the state PDA
+        state_pda.fee_payer_freelancer = fee_payer_freelancer; // Set who pays the fee
 
         Ok(())
     }
@@ -73,6 +81,7 @@ pub mod gig_hub_coin_test {
         let state_account = &mut ctx.accounts.statepda;
         let signer = &mut ctx.accounts.owner;
         let fee_account = &mut ctx.accounts.fee_account_pubkey;
+        let fee_account_key = "5Uw3sWy6oRu5Nt7jqcUVLqMzaQd9MdrpCfyXFYzCcA5h";
         let amount_for_fee = (state_account.amount / 100) * 7;
         let amount_for_pda = if state_account.fee_payer_freelancer {
             state_account.amount - amount_for_fee
@@ -80,11 +89,14 @@ pub mod gig_hub_coin_test {
             state_account.amount
         };
 
-        if amount_for_pda < 0 {
+        if amount_for_pda == 0 {
+            return err!(MyError::InvalidCalculation);
+        } else if amount_for_pda < 0 {
             return err!(MyError::InvalidCalculation);
         } else {
-            if fee_account.key().to_string() == "5Uw3sWy6oRu5Nt7jqcUVLqMzaQd9MdrpCfyXFYzCcA5h"
-                && state_account.assign_wallet.key() == signer.key() && state_account.status == "Waiting"
+            if fee_account.key().to_string() == fee_account_key
+                && state_account.assign_wallet.key() == signer.key()
+                && state_account.status == "Waiting"
             {
                 system_program::transfer(
                     CpiContext::new(
@@ -94,22 +106,10 @@ pub mod gig_hub_coin_test {
                             to: state_account.to_account_info(),
                         },
                     ),
-                    amount_for_pda,
+                    amount_for_pda + amount_for_fee,
                 )?;
 
                 state_account.pda_total_amount = amount_for_pda;
-
-                system_program::transfer(
-                    CpiContext::new(
-                        ctx.accounts.system_program.to_account_info(),
-                        system_program::Transfer {
-                            from: signer.to_account_info(),
-                            to: fee_account.to_account_info(),
-                        },
-                    ),
-                    amount_for_fee,
-                )?;
-
                 state_account.status = "InProgress".to_string();
             } else {
                 return err!(MyError::InvalidAccount);
@@ -124,16 +124,15 @@ pub mod gig_hub_coin_test {
         let state = &mut ctx.accounts.statepda;
         state.bump = _bump1;
         let fee_account = &mut ctx.accounts.fee_account;
+        let fee_account_key = "5Uw3sWy6oRu5Nt7jqcUVLqMzaQd9MdrpCfyXFYzCcA5h";
         let bump_vector = _bump1.to_le_bytes();
 
         let amount_for_fee = (state.amount / 100) * 7;
-        let mut amount_for_pda = 0;
-
-        if state.fee_payer_freelancer {
-            amount_for_pda = state.amount - amount_for_fee;
+        let amount_for_pda = if state.fee_payer_freelancer {
+            state.amount - amount_for_fee
         } else {
-            amount_for_pda = state.amount + amount_for_fee;
-        }
+            state.amount + amount_for_fee
+        };
 
         let sender = &ctx.accounts.owner;
         let inner = vec![
@@ -147,7 +146,7 @@ pub mod gig_hub_coin_test {
         if amount_for_pda < 0 {
             return err!(MyError::InvalidCalculation);
         } else {
-            if fee_account.key().to_string() == "DJAWin1NF25gaFFStbmY9WfkKarRbrWAE2CyTtkYqawD"
+            if fee_account.key().to_string() == fee_account_key
                 && state.assign_wallet.key() == ctx.accounts.owner.key() && state.status == "Waiting"
             {
                 //for account to PDA
@@ -200,7 +199,6 @@ pub mod gig_hub_coin_test {
         let assigned_counter_info = &ctx.accounts.statepda.assigned_counter.to_be_bytes();
         let bump_vector = _bump1.to_le_bytes();
         let amount = ctx.accounts.statepda.pda_total_amount;
-        //let dep = &mut ctx.accounts.deposit_token_account.key();
         let sender = ctx.accounts.statepda.owner;
         let inner = vec![
             sender.as_ref(),
@@ -211,9 +209,9 @@ pub mod gig_hub_coin_test {
         ];
         let outer = vec![inner.as_slice()];
 
-        if (ctx.accounts.statepda.status == "Cancaled"
+        if (ctx.accounts.statepda.status == Status::Canceled.to_string()
             && ctx.accounts.reciever.key() == ctx.accounts.statepda.assign_wallet.key())
-            || (ctx.accounts.statepda.status == "Completed"
+            || (ctx.accounts.statepda.status == Status::Completed.to_string()
                 && ctx.accounts.reciever.key() == ctx.accounts.statepda.owner.key())
         {
             let transfer_instruction = Transfer {
@@ -221,21 +219,20 @@ pub mod gig_hub_coin_test {
                 to: ctx.accounts.wallet_to_deposit_to.to_account_info(),
                 authority: ctx.accounts.statepda.to_account_info(),
             };
-    
+
             let cpi_ctx = CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 transfer_instruction,
                 outer.as_slice(),
             );
-    
+
             msg!("trasnfer call start");
             let state = &mut ctx.accounts.statepda;
-            state.status = "ContractClosed".to_string();
+            state.status = Status::ContractClosed.to_string();
             anchor_spl::token::transfer(cpi_ctx, amount)?;
-        }else{
+        } else {
             return err!(MyError::InvalidAccount);
         }
-
 
         Ok(())
     }
@@ -271,45 +268,48 @@ pub mod gig_hub_coin_test {
         ctx: Context<UpdateStatus>,
         is_problem: bool,
         admin_account: Pubkey,
-        solving_to: u8,
-    ) -> Result<()> {
+        solving_to: SolvingTo,
+        ) -> Result<()> {
         let state_account = &mut ctx.accounts.statepda;
         let signer = &mut ctx.accounts.owner;
-        if state_account.status == "InProgress"
+
+        if state_account.status == Status::InProgress.to_string()
             && state_account.owner.key() == signer.key()
-            && is_problem == false
+            && !is_problem
         {
-            state_account.status = "Cancaled".to_string();
+            state_account.status = Status::Canceled.to_string();
             msg!("Project cancelled by Employee");
-        } else if state_account.status == "InProgress"
+        } else if state_account.status == Status::InProgress.to_string()
             && state_account.assign_wallet.key() == signer.key()
-            && is_problem == false
+            && !is_problem
         {
-            state_account.status = "Completed".to_string();
+            state_account.status = Status::Completed.to_string();
             msg!("Project completed by Employer");
         }
 
-        if is_problem == true
+        if is_problem
             && (state_account.assign_wallet.key() == signer.key()
                 || state_account.owner.key() == signer.key())
-            && state_account.status == "InProgress" && admin_account.to_string() == "AiUUU6y6Axtb6v8EhdH6xnnPQoZ1wFQ4R2Z6U4Pm3fQM"
+            && state_account.status == Status::InProgress.to_string()
+            && admin_account.to_string() == "AiUUU6y6Axtb6v8EhdH6xnnPQoZ1wFQ4R2Z6U4Pm3fQM"
         {
             state_account.assigned_admin = admin_account;
-            state_account.status = "ProblemSolving".to_string();
+            state_account.status = Status::ProblemSolving.to_string();
             msg!("Project status changed to Problem Solving");
         }
 
         if signer.key() == state_account.assigned_admin.key()
-            && state_account.status == "ProblemSolving"
+            && state_account.status == Status::ProblemSolving.to_string()
         {
-            //solving 1 for Employee solving 2 for Employer
-            //Admin decide right people is Employee
-            if solving_to == 1 {
-                state_account.status = "Completed".to_string();
-                msg!("Project problem solving by Admin (Reciever will be Employee)");
-            } else if solving_to == 2 {
-                state_account.status = "Cancaled".to_string();
-                msg!("Project problem solving by Admin (Reciever will be Employer)");
+            match solving_to {
+                SolvingTo::Employee => {
+                    state_account.status = Status::Completed.to_string();
+                    msg!("Project problem solving by Admin (Receiver will be Employee)");
+                }
+                SolvingTo::Employer => {
+                    state_account.status = Status::Canceled.to_string();
+                    msg!("Project problem solving by Admin (Receiver will be Employer)");
+                }
             }
         }
 
@@ -499,4 +499,24 @@ pub enum Status {
     Completed,
     Canceled,
     ContractClosed,
+    ProblemSolving
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+pub enum SolvingTo {
+    Employee = 1,
+    Employer = 2,
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            Status::Waiting => "Waiting",
+            Status::InProgress => "InProgress",
+            Status::Completed => "Completed",
+            Status::Canceled => "Canceled",
+            Status::ContractClosed => "ContractClosed",
+            Status::ProblemSolving => "ProblemSolving",
+        })
+    }
 }
